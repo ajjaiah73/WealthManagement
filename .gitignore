@@ -1,5 +1,23 @@
+# Secrets
 .env
-.venv/
+*.env.local
+!.env.example
+
+# Python
 __pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
 .pytest_cache/
-*.pyc
+.mypy_cache/
+.ruff_cache/
+
+# Runtime data (SQLite DB, embedded Qdrant, cached ONNX models)
+backend/data/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Editors
+.vscode/

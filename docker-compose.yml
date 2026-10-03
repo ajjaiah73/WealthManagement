@@ -1,29 +1,94 @@
+# Infrastructure (Postgres, Qdrant, Neo4j) starts by default; the containerised app
+# (backend + frontend) is opt-in via the "app" profile:
+#
+#   docker-compose up -d                      # infra only - run the backend locally against it
+#   docker-compose --profile app up -d --build   # everything, UI on http://localhost:8081
+#
+# Host ports are deliberately non-default to avoid clashing with other local services.
+# Secrets (ANTHROPIC_API_KEY, JWT_SECRET) are read from backend/.env at runtime and are
+# never baked into an image.
+
+name: superannuation-advisory
+
 services:
-  mysql:
-    image: mysql:8.4
+  postgres:
+    image: postgres:16-alpine
     environment:
-      MYSQL_ROOT_PASSWORD: rootpass
-      MYSQL_DATABASE: advisor
-      MYSQL_USER: advisor
-      MYSQL_PASSWORD: advisorpass
-    ports: ["3307:3306"]
-    volumes: ["mysql_data:/var/lib/mysql"]
+      POSTGRES_DB: advisory
+      POSTGRES_USER: advisory
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-advisory}
+    ports:
+      - "55432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uadvisor", "-padvisorpass"]
+      test: ["CMD-SHELL", "pg_isready -U advisory -d advisory"]
       interval: 5s
       timeout: 5s
       retries: 20
+
   qdrant:
-    image: qdrant/qdrant:latest
-    ports: ["6333:6333", "6334:6334"]
-    volumes: ["qdrant_data:/qdrant/storage"]
+    image: qdrant/qdrant:v1.15.5
+    ports:
+      - "56333:6333"
+      - "56334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
   neo4j:
-    image: neo4j:5-community
+    image: neo4j:5.26-community
     environment:
-      NEO4J_AUTH: neo4j/financialpass
-    ports: ["7474:7474", "7687:7687"]
-    volumes: ["neo4j_data:/data"]
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-advisory-graph}
+      NEO4J_server_memory_heap_max__size: 512m
+    ports:
+      - "57474:7474"
+      - "57687:7687"
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  backend:
+    profiles: ["app"]
+    build: ./backend
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://advisory:${POSTGRES_PASSWORD:-advisory}@postgres:5432/advisory
+      QDRANT_URL: http://qdrant:6333
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-advisory-graph}
+      MODELS_DIR: /app/data/models
+    ports:
+      - "58010:8000"
+    volumes:
+      # Embedding + reranker ONNX models; downloaded on first start if empty.
+      - ./backend/data/models:/app/data/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      neo4j:
+        condition: service_healthy
+
+  frontend:
+    profiles: ["app"]
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: http://localhost:58010
+    ports:
+      - "8081:80"
+    depends_on:
+      - backend
+
 volumes:
-  mysql_data:
-  qdrant_data:
-  neo4j_data:
+  postgres-data:
+  qdrant-data:
+  neo4j-data:
